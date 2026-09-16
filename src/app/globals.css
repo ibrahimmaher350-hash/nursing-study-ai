@@ -68,3 +68,29 @@ a:active {
   transform: scale(0.98);
   transition: transform 0.05s ease;
 }
+
+/* Print / PDF Mode Styling (Rule 40) */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    direction: rtl;
+  }
+
+  header, nav, aside, footer, button, .print\:hidden {
+    display: none !important;
+  }
+
+  article {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  section {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 2rem;
+  }
+}

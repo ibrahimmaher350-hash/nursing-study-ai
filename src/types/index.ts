@@ -65,6 +65,8 @@ export interface Slide {
   examFocus: ExamFocusItem[];
   explanation?: SlideExplanation;
   terms: MedicalTerm[];
+  imageUrl?: string;
+  isBookmarked?: boolean;
   notes?: string;
 }
 

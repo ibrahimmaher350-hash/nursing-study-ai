@@ -1,28 +1,27 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { LectureRepository } from '@/lib/storage/repository';
 import { Lecture } from '@/types';
-import { SlideViewer } from '@/components/lecture/SlideViewer';
+import { LectureDocument } from '@/components/lecture/LectureDocument';
+import { SummaryView } from '@/components/lecture/SummaryView';
+import { QuestionView } from '@/components/lecture/QuestionView';
+import { LectureToolbar } from '@/components/lecture/LectureToolbar';
+import { DesktopSlideSidebar } from '@/components/lecture/DesktopSlideSidebar';
+import { LectureSearchModal } from '@/components/lecture/LectureSearchModal';
 import { BottomSheet } from '@/components/ui/BottomSheet';
 import {
   ArrowRight,
-  Menu,
-  ChevronRight,
-  ChevronLeft,
-  List,
+  BookOpen,
   Layers,
   Award,
-  Youtube,
-  Search,
-  BookOpen,
-  X,
-  ExternalLink,
-  Clock,
-  Sparkles,
-  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  List,
+  EyeOff,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -32,421 +31,376 @@ export default function LectureDetailPage() {
   const lectureId = params?.id as string;
 
   const [lecture, setLecture] = useState<Lecture | null>(null);
-  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Bottom Sheet Menus (Rule 12, 17, 21, 31, 32)
-  const [showMenuSheet, setShowMenuSheet] = useState(false);
-  const [showSlideListSheet, setShowSlideListSheet] = useState(false);
-  const [showSummarySheet, setShowSummarySheet] = useState(false);
-  const [showYouTubeSheet, setShowYouTubeSheet] = useState(false);
-  const [showSearchSheet, setShowSearchSheet] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  // Tab State: 'document' | 'summary' | 'questions' (Rule 30, 31, 32)
+  const [activeTab, setActiveTab] = useState<'document' | 'summary' | 'questions'>('document');
 
-  // Mobile Touch Swipe Gesture Support (Rule 11)
-  const touchStartX = useRef(0);
-  const touchEndX = useRef(0);
+  // Active slide number for scroll spy & progress
+  const [activeSlideNumber, setActiveSlideNumber] = useState(1);
 
+  // Typography font size scaling delta (-2 to +4)
+  const [fontSizeDelta, setFontSizeDelta] = useState(0);
+
+  // Reading Mode State (Rule 21)
+  const [isReadingMode, setIsReadingMode] = useState(false);
+
+  // Modals state
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showMobileSlideSheet, setShowMobileSlideSheet] = useState(false);
+
+  // Load font size preference from localStorage
+  useEffect(() => {
+    try {
+      const savedDelta = localStorage.getItem('nursing_lecture_font_delta');
+      if (savedDelta !== null) {
+        setFontSizeDelta(parseInt(savedDelta, 10) || 0);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const handleUpdateFontSize = (newDelta: number) => {
+    const clamped = Math.max(-2, Math.min(4, newDelta));
+    setFontSizeDelta(clamped);
+    try {
+      localStorage.setItem('nursing_lecture_font_delta', clamped.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Load Lecture Data
   useEffect(() => {
     if (lectureId) {
+      setIsLoading(true);
       const data = LectureRepository.getLectureById(lectureId);
       if (data) {
         setLecture(data);
         LectureRepository.touchLecture(lectureId);
       }
+      setIsLoading(false);
     }
   }, [lectureId]);
 
-  if (!lecture) {
+  // Scroll Spy: Track which slide is currently in view
+  useEffect(() => {
+    if (activeTab !== 'document' || !lecture) return;
+
+    const handleScroll = () => {
+      const slideElements = document.querySelectorAll('[data-slide-number]');
+      const scrollPosition = window.scrollY + 200;
+
+      for (let i = slideElements.length - 1; i >= 0; i--) {
+        const el = slideElements[i] as HTMLElement;
+        if (el.offsetTop <= scrollPosition) {
+          const num = parseInt(el.getAttribute('data-slide-number') || '1', 10);
+          setActiveSlideNumber(num);
+          break;
+        }
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [activeTab, lecture]);
+
+  // Smooth scroll to slide
+  const handleScrollToSlide = (slideNumber: number) => {
+    if (activeTab !== 'document') {
+      setActiveTab('document');
+      setTimeout(() => {
+        const el = document.getElementById(`slide-${slideNumber}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
+    } else {
+      const el = document.getElementById(`slide-${slideNumber}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+    setActiveSlideNumber(slideNumber);
+  };
+
+  const totalSlides = lecture?.slides.length || 0;
+  const progressPercent = totalSlides > 0 ? Math.round((activeSlideNumber / totalSlides) * 100) : 0;
+
+  // 1. CLEAN DOCUMENT SKELETON LOADING STATE (Rule 46)
+  if (isLoading) {
     return (
-      <div className="p-8 text-center text-slate-500">
-        جاري تحميل المحاضرة...
+      <div className="max-w-[880px] mx-auto py-12 px-6 space-y-8 animate-pulse">
+        <div className="h-6 w-36 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+        <div className="h-10 w-3/4 bg-slate-200 dark:bg-slate-800 rounded-2xl" />
+        <div className="p-8 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 space-y-6">
+          <div className="h-6 w-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+          <div className="space-y-3">
+            <div className="h-4 w-full bg-slate-100 dark:bg-slate-800/60 rounded-lg" />
+            <div className="h-4 w-5/6 bg-slate-100 dark:bg-slate-800/60 rounded-lg" />
+            <div className="h-4 w-4/6 bg-slate-100 dark:bg-slate-800/60 rounded-lg" />
+          </div>
+          <div className="h-20 w-full bg-slate-50 dark:bg-slate-800/40 rounded-2xl" />
+        </div>
       </div>
     );
   }
 
-  const totalSlides = lecture.slides.length;
-  const currentSlide = lecture.slides[currentSlideIndex] || lecture.slides[0];
-  const progressPercent = Math.round(((currentSlideIndex + 1) / totalSlides) * 100);
-
-  const handleNextSlide = () => {
-    if (currentSlideIndex < totalSlides - 1) {
-      setCurrentSlideIndex((prev) => prev + 1);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  };
-
-  const handlePrevSlide = () => {
-    if (currentSlideIndex > 0) {
-      setCurrentSlideIndex((prev) => prev - 1);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  };
-
-  // Swipe Gestures (Rule 11)
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.targetTouches[0].clientX;
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    touchEndX.current = e.targetTouches[0].clientX;
-  };
-
-  const handleTouchEnd = () => {
-    const diff = touchStartX.current - touchEndX.current;
-    // Swipe left (in RTL: next slide)
-    if (diff > 60) {
-      handleNextSlide();
-    }
-    // Swipe right (in RTL: prev slide)
-    else if (diff < -60) {
-      handlePrevSlide();
-    }
-  };
-
-  // Search matches
-  const searchResults = searchQuery.trim()
-    ? lecture.slides.filter(
-        (s) =>
-          s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.originalEnglish.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.arabicTranslation.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
+  // 2. ERROR STATE (Rule 48)
+  if (!lecture) {
+    return (
+      <div className="max-w-md mx-auto py-20 px-6 text-center space-y-4">
+        <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/50 flex items-center justify-center text-rose-600 mx-auto">
+          <AlertCircle className="w-6 h-6" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+            تعذر فتح المحاضرة
+          </h2>
+          <p className="text-xs text-slate-400">
+            المحاضرة المطلوبة غير موجودة أو تم حذفها.
+          </p>
+        </div>
+        <Link
+          href="/lectures"
+          className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-2xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold transition-all shadow-xs"
+        >
+          <span>العودة إلى مكتبتي الدراسية</span>
+          <ChevronLeft className="w-4 h-4" />
+        </Link>
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="max-w-3xl mx-auto pb-24 space-y-6"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-    >
-      {/* 1. TOP BAR: [← رجوع] | اسم المحاضرة | الشريحة 1 / 42 | [☰ القائمة] */}
-      <header className="flex items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-        <div className="flex items-center gap-2 min-w-0">
-          <Link
-            href={lecture.folderId ? `/lectures?folder=${lecture.folderId}` : '/lectures'}
-            className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200 shrink-0"
-            aria-label="العودة"
-          >
-            <ArrowRight className="w-4 h-4" />
-          </Link>
+    <div className="min-h-screen pb-24 space-y-6">
+      {/* 1. TOP APP BAR & CONTEXTUAL NAVIGATION (Rule 3 & 32) */}
+      {!isReadingMode && (
+        <header className="print:hidden sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 py-2.5 px-3 sm:px-6 shadow-2xs">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+            {/* Back to library / folder */}
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Link
+                href={lecture.folderId ? `/lectures?folder=${lecture.folderId}` : '/lectures'}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 shrink-0 transition-colors"
+                title="العودة للمكتبة"
+              >
+                <ArrowRight className="w-4 h-4" />
+              </Link>
 
-          <div className="min-w-0">
-            <h1 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white truncate">
-              {lecture.title}
-            </h1>
-            <p className="text-[11px] text-slate-400 truncate">
-              {lecture.subject}
-            </p>
+              <div className="min-w-0 pr-1">
+                <span className="text-[10px] text-slate-400 font-semibold block truncate">
+                  {lecture.subject}
+                </span>
+                <h1 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate max-w-[200px] sm:max-w-xs md:max-w-md">
+                  {lecture.title}
+                </h1>
+              </div>
+            </div>
+
+            {/* Contextual Navigation Tabs: [المحاضرة | الملخص | الأسئلة] (Rule 32) */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+              <button
+                onClick={() => setActiveTab('document')}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all',
+                  activeTab === 'document'
+                    ? 'bg-white dark:bg-slate-900 text-sky-800 dark:text-sky-300 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                )}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>المحاضرة</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('summary')}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all',
+                  activeTab === 'summary'
+                    ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                )}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>الملخص</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('questions')}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all',
+                  activeTab === 'questions'
+                    ? 'bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-300 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                )}
+              >
+                <Award className="w-3.5 h-3.5" />
+                <span>الأسئلة ({lecture.questions?.length || 0})</span>
+              </button>
+            </div>
           </div>
-        </div>
 
-        {/* Action Buttons: [الشرائح] + [اختبر نفسك] + [☰] */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={() => setShowSlideListSheet(true)}
-            className="hidden sm:flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300"
-          >
-            <List className="w-3.5 h-3.5" />
-            <span>الشرائح</span>
-          </button>
-
-          <Link
-            href={`/lectures/${lecture.id}/exam`}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900/40 text-xs font-bold transition-colors"
-          >
-            <Award className="w-3.5 h-3.5" />
-            <span>اختبر نفسك</span>
-          </Link>
-
-          <button
-            onClick={() => setShowMenuSheet(true)}
-            className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-slate-700 dark:text-slate-200"
-            aria-label="القائمة"
-          >
-            <Menu className="w-4 h-4" />
-          </button>
-        </div>
-      </header>
-
-      {/* 2. SLIDE CONTENT */}
-      <main>
-        <SlideViewer slide={currentSlide} totalSlides={totalSlides} />
-      </main>
-
-      {/* 3. STICKY BOTTOM SLIDE NAVIGATION (Rule 11) */}
-      <footer className="fixed bottom-16 md:bottom-4 left-0 right-0 z-30 px-4 pointer-events-none">
-        <div className="max-w-md mx-auto p-2.5 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200/80 dark:border-slate-800 shadow-xl flex items-center justify-between gap-3 pointer-events-auto">
-          {/* Previous */}
-          <button
-            onClick={handlePrevSlide}
-            disabled={currentSlideIndex === 0}
-            className={cn(
-              'px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1',
-              currentSlideIndex === 0
-                ? 'opacity-30 cursor-not-allowed text-slate-400'
-                : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-            )}
-          >
-            <ChevronRight className="w-4 h-4" />
-            <span>السابق</span>
-          </button>
-
-          {/* Indicator & Progress Bar */}
-          <div
-            onClick={() => setShowSlideListSheet(true)}
-            className="flex-1 cursor-pointer text-center space-y-1"
-          >
-            <span className="text-xs font-bold text-slate-700 dark:text-slate-300 font-inter">
-              {currentSlideIndex + 1} / {totalSlides}
-            </span>
-            <div className="w-full bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+          {/* Thin Slide Progress Bar (Rule 26) */}
+          {activeTab === 'document' && (
+            <div className="w-full bg-slate-100 dark:bg-slate-800 h-1 mt-2.5 rounded-full overflow-hidden">
               <div
-                className="bg-sky-600 h-full rounded-full transition-all duration-200"
+                className="bg-sky-600 dark:bg-sky-500 h-full rounded-full transition-all duration-200"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
-          </div>
+          )}
+        </header>
+      )}
 
-          {/* Next */}
+      {/* Floating Exit Reading Mode Bar (Rule 21) */}
+      {isReadingMode && (
+        <div className="print:hidden fixed top-3 left-1/2 -translate-x-1/2 z-40 bg-slate-900/90 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md text-xs font-semibold animate-fade-in">
+          <span>وضع القراءة الهادئ</span>
           <button
-            onClick={handleNextSlide}
-            disabled={currentSlideIndex === totalSlides - 1}
-            className={cn(
-              'px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1',
-              currentSlideIndex === totalSlides - 1
-                ? 'opacity-30 cursor-not-allowed text-slate-400'
-                : 'bg-sky-700 hover:bg-sky-800 text-white shadow-xs'
-            )}
+            onClick={() => setIsReadingMode(false)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/20 hover:bg-white/30 text-white font-bold transition-colors"
           >
-            <span>التالي</span>
-            <ChevronLeft className="w-4 h-4" />
+            <EyeOff className="w-3.5 h-3.5" />
+            <span>إنهاء</span>
           </button>
         </div>
-      </footer>
+      )}
 
-      {/* BOTTOM SHEET: QUICK ACTIONS MENU (Rule 12) */}
-      <BottomSheet
-        isOpen={showMenuSheet}
-        onClose={() => setShowMenuSheet(false)}
-        title="خيارات المحاضرة"
-      >
-        <div className="space-y-2 text-right">
-          <button
-            onClick={() => {
-              setShowMenuSheet(false);
-              setShowSlideListSheet(true);
-            }}
-            className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200"
-          >
-            <div className="flex items-center gap-2.5">
-              <List className="w-4 h-4 text-sky-600" />
-              <span>فهرس الشرائح ({totalSlides})</span>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400" />
-          </button>
+      {/* 2. DOCUMENT TOOLBAR (Rule 19, 20) */}
+      <div className="max-w-[880px] mx-auto px-4 sm:px-0">
+        <LectureToolbar
+          fontSizeDelta={fontSizeDelta}
+          onIncreaseFontSize={() => handleUpdateFontSize(fontSizeDelta + 1)}
+          onDecreaseFontSize={() => handleUpdateFontSize(fontSizeDelta - 1)}
+          isReadingMode={isReadingMode}
+          onToggleReadingMode={() => setIsReadingMode(!isReadingMode)}
+          onOpenSearch={() => setShowSearchModal(true)}
+        />
+      </div>
 
-          <button
-            onClick={() => {
-              setShowMenuSheet(false);
-              setShowSummarySheet(true);
-            }}
-            className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200"
-          >
-            <div className="flex items-center gap-2.5">
-              <Layers className="w-4 h-4 text-emerald-600" />
-              <span>ملخص المحاضرة</span>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400" />
-          </button>
+      {/* 3. MAIN CONTENT: SIDEBAR + CENTRAL DOCUMENT CANVAS */}
+      <div className="max-w-7xl mx-auto px-2 sm:px-4 flex items-start justify-center gap-6">
+        {/* Desktop Sidebar (Desktop only) (Rule 23) */}
+        {!isReadingMode && activeTab === 'document' && (
+          <DesktopSlideSidebar
+            slides={lecture.slides}
+            activeSlideNumber={activeSlideNumber}
+            onSelectSlide={handleScrollToSlide}
+          />
+        )}
 
-          <Link
-            href={`/lectures/${lecture.id}/exam`}
-            onClick={() => setShowMenuSheet(false)}
-            className="w-full p-3 rounded-2xl bg-amber-50/60 dark:bg-amber-950/40 hover:bg-amber-100 flex items-center justify-between text-xs font-bold text-amber-900 dark:text-amber-200"
-          >
-            <div className="flex items-center gap-2.5">
-              <Award className="w-4 h-4 text-amber-600" />
-              <span>اختبر نفسك ({lecture.questions?.length || 0} أسئلة)</span>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-amber-500" />
-          </Link>
+        {/* Central Canvas Container */}
+        <main className="flex-1 max-w-[880px] min-w-0">
+          {activeTab === 'document' && (
+            <LectureDocument
+              lecture={lecture}
+              fontSizeDelta={fontSizeDelta}
+              activeSlideNumber={activeSlideNumber}
+            />
+          )}
 
-          <button
-            onClick={() => {
-              setShowMenuSheet(false);
-              setShowYouTubeSheet(true);
-            }}
-            className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200"
-          >
-            <div className="flex items-center gap-2.5">
-              <Youtube className="w-4 h-4 text-rose-600" />
-              <span>شرح خارجي من YouTube</span>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400" />
-          </button>
+          {activeTab === 'summary' && <SummaryView lecture={lecture} />}
 
-          <button
-            onClick={() => {
-              setShowMenuSheet(false);
-              setShowSearchSheet(true);
-            }}
-            className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200"
-          >
-            <div className="flex items-center gap-2.5">
-              <Search className="w-4 h-4 text-slate-600" />
-              <span>بحث داخل المحاضرة</span>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400" />
-          </button>
-        </div>
-      </BottomSheet>
+          {activeTab === 'questions' && <QuestionView lecture={lecture} />}
+        </main>
+      </div>
 
-      {/* BOTTOM SHEET: SLIDE LIST (Rule 31) */}
-      <BottomSheet
-        isOpen={showSlideListSheet}
-        onClose={() => setShowSlideListSheet(false)}
-        title="فهرس الشرائح"
-      >
-        <div className="space-y-1.5 text-right max-h-96">
-          {lecture.slides.map((s, idx) => (
+      {/* 4. FLOATING MOBILE SLIDE NAVIGATION BAR (Rule 22, 24, 36) */}
+      {activeTab === 'document' && (
+        <footer className="print:hidden fixed bottom-16 md:bottom-5 left-0 right-0 z-30 px-4 pointer-events-none">
+          <div className="max-w-sm mx-auto p-2 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200/80 dark:border-slate-800 shadow-xl flex items-center justify-between gap-2 pointer-events-auto select-none">
+            {/* Prev Slide */}
             <button
-              key={s.id}
-              onClick={() => {
-                setCurrentSlideIndex(idx);
-                setShowSlideListSheet(false);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
+              onClick={() => handleScrollToSlide(Math.max(1, activeSlideNumber - 1))}
+              disabled={activeSlideNumber <= 1}
               className={cn(
-                'w-full p-3 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors',
-                idx === currentSlideIndex
-                  ? 'bg-sky-50 dark:bg-sky-950 text-sky-800 dark:text-sky-300 font-bold'
-                  : 'hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                'px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1',
+                activeSlideNumber <= 1
+                  ? 'opacity-30 cursor-not-allowed text-slate-400'
+                  : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
               )}
             >
-              <div className="flex items-center gap-2 min-w-0 pr-1">
-                <span className="font-inter text-slate-400 text-[11px] shrink-0">
-                  #{s.slideNumber}
-                </span>
-                <span className="truncate">{s.title}</span>
-              </div>
-              {idx === currentSlideIndex && (
-                <span className="text-[10px] text-sky-600 font-bold shrink-0">الحالية</span>
-              )}
+              <ChevronRight className="w-4 h-4" />
+              <span>السابق</span>
             </button>
-          ))}
-        </div>
-      </BottomSheet>
 
-      {/* BOTTOM SHEET: SUMMARY (Rule 17) */}
-      <BottomSheet
-        isOpen={showSummarySheet}
-        onClose={() => setShowSummarySheet(false)}
-        title="ملخص المحاضرة"
-      >
-        <div className="space-y-4 text-right">
-          {/* Quick Review */}
-          <div className="space-y-2">
-            <h4 className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
-              أهم النقاط والمراجعة السريعة:
-            </h4>
-            <div className="space-y-1.5 text-xs text-slate-700 dark:text-slate-300">
-              {lecture.summary.quickReview.points.map((p, idx) => (
-                <div key={idx} className="p-2.5 rounded-xl bg-emerald-50/40 dark:bg-emerald-950/20 border border-emerald-100/60 dark:border-emerald-900/30">
-                  <p className="font-medium text-slate-800 dark:text-slate-200">{p.ar}</p>
-                  <p className="medical-en text-[11px] text-slate-400 mt-0.5">{p.en}</p>
-                </div>
-              ))}
-            </div>
+            {/* Slide Index Trigger */}
+            <button
+              onClick={() => setShowMobileSlideSheet(true)}
+              className="flex-1 py-1 text-center font-mono text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-sky-600 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <List className="w-3.5 h-3.5 text-slate-400" />
+              <span>
+                الشريحة {activeSlideNumber} من {totalSlides}
+              </span>
+            </button>
+
+            {/* Next Slide */}
+            <button
+              onClick={() => handleScrollToSlide(Math.min(totalSlides, activeSlideNumber + 1))}
+              disabled={activeSlideNumber >= totalSlides}
+              className={cn(
+                'px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1',
+                activeSlideNumber >= totalSlides
+                  ? 'opacity-30 cursor-not-allowed text-slate-400'
+                  : 'bg-sky-700 hover:bg-sky-800 text-white shadow-xs'
+              )}
+            >
+              <span>التالي</span>
+              <ChevronLeft className="w-4 h-4" />
+            </button>
           </div>
+        </footer>
+      )}
 
-          {/* Clinical Pearls */}
-          {lecture.summary.detailedReview.nursingPearls.length > 0 && (
-            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <h4 className="text-xs font-bold text-sky-800 dark:text-sky-300">
-                ركز على (درر تمريضية إكلينيكية):
-              </h4>
-              <ul className="space-y-1 text-xs text-slate-700 dark:text-slate-300">
-                {lecture.summary.detailedReview.nursingPearls.map((pearl, idx) => (
-                  <li key={idx} className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800/50">
-                    • {pearl.ar}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </BottomSheet>
-
-      {/* BOTTOM SHEET: YOUTUBE (Rule 21) */}
+      {/* 5. MOBILE SLIDE LIST BOTTOM SHEET (Rule 24) */}
       <BottomSheet
-        isOpen={showYouTubeSheet}
-        onClose={() => setShowYouTubeSheet(false)}
-        title="شرح خارجي من YouTube"
+        isOpen={showMobileSlideSheet}
+        onClose={() => setShowMobileSlideSheet(false)}
+        title="فهرس شرائح المحاضرة"
       >
-        <div className="space-y-3 text-right">
-          <p className="text-[11px] text-slate-400">
-            فيديوهات تعليمية تكميلية موثوقة مرتبطة بموضوع المحاضرة:
-          </p>
+        <div className="space-y-1.5 text-right max-h-96 overflow-y-auto">
+          {lecture.slides.map((s) => {
+            const isCurrent = s.slideNumber === activeSlideNumber;
 
-          <div className="space-y-2.5">
-            {lecture.youtubeResources?.map((video) => (
-              <a
-                key={video.id}
-                href={video.videoUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between gap-3 transition-colors"
-              >
-                <div className="space-y-0.5 min-w-0">
-                  <span className="text-[10px] font-bold text-rose-600 block">
-                    {video.channelTitle}
-                  </span>
-                  <h5 className="text-xs font-bold text-slate-800 dark:text-slate-200 line-clamp-1">
-                    {video.title}
-                  </h5>
-                </div>
-                <ExternalLink className="w-4 h-4 text-slate-400 shrink-0" />
-              </a>
-            ))}
-          </div>
-        </div>
-      </BottomSheet>
-
-      {/* BOTTOM SHEET: SEARCH (Rule 32) */}
-      <BottomSheet
-        isOpen={showSearchSheet}
-        onClose={() => setShowSearchSheet(false)}
-        title="بحث داخل المحاضرة"
-      >
-        <div className="space-y-3 text-right">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ابحث عن كلمة، مصطلح، أو موضوع..."
-            className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
-          />
-
-          <div className="space-y-1.5 max-h-60 overflow-y-auto">
-            {searchResults.map((s) => (
+            return (
               <button
-                key={s.id}
+                key={s.id || s.slideNumber}
                 onClick={() => {
-                  setCurrentSlideIndex(s.slideNumber - 1);
-                  setShowSearchSheet(false);
+                  handleScrollToSlide(s.slideNumber);
+                  setShowMobileSlideSheet(false);
                 }}
-                className="w-full text-right p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-xs block truncate"
+                className={cn(
+                  'w-full p-3 rounded-2xl text-xs font-semibold flex items-center justify-between transition-colors text-right',
+                  isCurrent
+                    ? 'bg-sky-50 dark:bg-sky-950 text-sky-800 dark:text-sky-300 font-bold border border-sky-200 dark:border-sky-900'
+                    : 'hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                )}
               >
-                <span className="font-bold text-sky-700 dark:text-sky-300">
-                  شريحة {s.slideNumber}:
-                </span>{' '}
-                <span className="text-slate-600 dark:text-slate-300">{s.title}</span>
+                <div className="flex items-center gap-2.5 min-w-0 pr-1">
+                  <span className="font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 shrink-0">
+                    #{s.slideNumber}
+                  </span>
+                  <span className="truncate">{s.title}</span>
+                </div>
+                {isCurrent && (
+                  <span className="text-[10px] text-sky-600 font-bold shrink-0">الحالية</span>
+                )}
               </button>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </BottomSheet>
+
+      {/* 6. SEARCH MODAL (Rule 33) */}
+      <LectureSearchModal
+        isOpen={showSearchModal}
+        onClose={() => setShowSearchModal(false)}
+        slides={lecture.slides}
+        onSelectSlide={handleScrollToSlide}
+      />
     </div>
   );
 }
