@@ -1,64 +1,294 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  Folder,
+  FolderPlus,
+  BookMarked,
+  Upload,
+  Plus,
+  Search,
+  MoreVertical,
+  Move,
+  Edit3,
+  Trash2,
+  ChevronLeft,
+  Sparkles,
+  BookOpen,
+  X,
+  Check,
+  Loader2,
+  Layers,
+} from 'lucide-react';
 import { LectureRepository } from '@/lib/storage/repository';
-import { Lecture, Slide, ProcessingStatus } from '@/types';
+import { Lecture, StudyFolder, Slide } from '@/types';
 import { parsePptxBuffer } from '@/lib/parsers/pptxParser';
 import { formatSlideId } from '@/lib/utils';
-import {
-  BookOpen,
-  Upload,
-  Bookmark,
-  Share2,
-  Trash2,
-  Edit2,
-  CheckCircle2,
-  Clock,
-  Sparkles,
-  FileText,
-  AlertCircle,
-  X,
-  ExternalLink,
-  Plus,
-  Loader2,
-} from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { FolderModal } from '@/components/folder/FolderModal';
+import { MoveModal } from '@/components/folder/MoveModal';
+import { DeleteSafetyModal } from '@/components/folder/DeleteSafetyModal';
+import { RenameLectureModal } from '@/components/folder/RenameLectureModal';
 
-export default function LecturesPage() {
-  const [lectures, setLectures] = useState<Lecture[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStepMessage, setUploadStepMessage] = useState('');
-  const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
-  const [newTitleInput, setNewTitleInput] = useState('');
-  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
+// Progress steps for upload
+const progressSteps = [
+  'رفع الملف',
+  'قراءة الشرائح',
+  'استخراج النص الطبي',
+  'الترجمة الطبية الأكاديمية',
+  'تجهيز المراجعة والأسئلة',
+];
+
+function LibraryContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const currentFolderId = searchParams.get('folder') || null;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    setLectures(LectureRepository.getLectures());
-  }, []);
+  // Core data states
+  const [allFolders, setAllFolders] = useState<StudyFolder[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const refreshLectures = () => {
+  // Modals state
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<'create' | 'edit'>('create');
+  const [folderModalType, setFolderModalType] = useState<'folder' | 'subject'>('folder');
+  const [activeFolderToEdit, setActiveFolderToEdit] = useState<StudyFolder | null>(null);
+
+  const [moveModalOpen, setMoveModalOpen] = useState(false);
+  const [moveItem, setMoveItem] = useState<{
+    type: 'lecture' | 'folder';
+    id: string;
+    title: string;
+    currentParentId: string | null;
+  } | null>(null);
+
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [folderToDelete, setFolderToDelete] = useState<{
+    folder: StudyFolder;
+    stats: { subfolderCount: number; lectureCount: number };
+  } | null>(null);
+
+  const [renameLectureModalOpen, setRenameLectureModalOpen] = useState(false);
+  const [lectureToRename, setLectureToRename] = useState<Lecture | null>(null);
+
+  // Active dropdown menu ID for items
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+
+  // In-folder processing state
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
+
+  // Load data
+  const loadData = () => {
+    setAllFolders(LectureRepository.getAllFolders());
     setLectures(LectureRepository.getLectures());
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleOutsideClick = () => setActiveMenuId(null);
+    window.addEventListener('click', handleOutsideClick);
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, []);
+
+  // Current folder info & breadcrumb path
+  const currentFolder = useMemo(
+    () => (currentFolderId ? allFolders.find((f) => f.id === currentFolderId) || null : null),
+    [currentFolderId, allFolders]
+  );
+
+  const breadcrumbPath = useMemo(
+    () => (currentFolderId ? LectureRepository.getFolderPath(currentFolderId) : []),
+    [currentFolderId, allFolders]
+  );
+
+  const parentFolder = useMemo(() => {
+    if (breadcrumbPath.length > 1) {
+      return breadcrumbPath[breadcrumbPath.length - 2];
+    }
+    return null;
+  }, [breadcrumbPath]);
+
+  // Current folder children
+  const currentSubfolders = useMemo(
+    () => allFolders.filter((f) => f.parentId === currentFolderId),
+    [allFolders, currentFolderId]
+  );
+
+  const currentLectures = useMemo(
+    () => lectures.filter((l) => (l.folderId ?? null) === currentFolderId),
+    [lectures, currentFolderId]
+  );
+
+  // Search Results across entire library
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return null;
+
+    const matchedFolders = allFolders
+      .filter((f) => f.name.toLowerCase().includes(q))
+      .map((f) => {
+        const path = LectureRepository.getFolderPath(f.id);
+        const pathString =
+          path.length > 1
+            ? path
+                .slice(0, -1)
+                .map((p) => p.name)
+                .join(' / ')
+            : 'المكتبة الرئيسية';
+        return { item: f, type: 'folder' as const, pathString };
+      });
+
+    const matchedLectures = lectures
+      .filter(
+        (l) =>
+          l.title.toLowerCase().includes(q) ||
+          l.subject.toLowerCase().includes(q)
+      )
+      .map((l) => {
+        const path = l.folderId ? LectureRepository.getFolderPath(l.folderId) : [];
+        const pathString =
+          path.length > 0
+            ? 'مكتبتي / ' + path.map((p) => p.name).join(' / ')
+            : 'مكتبتي العامة';
+        return { item: l, type: 'lecture' as const, pathString };
+      });
+
+    return { matchedFolders, matchedLectures };
+  }, [searchQuery, allFolders, lectures]);
+
+  // Folder creation & editing
+  const handleOpenCreateFolder = (type: 'folder' | 'subject') => {
+    setActiveFolderToEdit(null);
+    setFolderModalMode('create');
+    setFolderModalType(type);
+    setFolderModalOpen(true);
+  };
+
+  const handleOpenEditFolder = (folder: StudyFolder) => {
+    setActiveFolderToEdit(folder);
+    setFolderModalMode('edit');
+    setFolderModalType(folder.type);
+    setFolderModalOpen(true);
+  };
+
+  const handleFolderSubmit = (name: string, type: 'folder' | 'subject', color: string) => {
+    if (folderModalMode === 'create') {
+      LectureRepository.createFolder(name, currentFolderId, type, color);
+    } else if (activeFolderToEdit) {
+      LectureRepository.renameFolder(activeFolderToEdit.id, name);
+    }
+    loadData();
+  };
+
+  // Safe Folder Deletion
+  const handleRequestDeleteFolder = (folder: StudyFolder, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const stats = LectureRepository.getFolderStats(folder.id);
+    setFolderToDelete({ folder, stats });
+    setDeleteModalOpen(true);
+  };
+
+  const handleConfirmDeleteFolder = () => {
+    if (!folderToDelete) return;
+    LectureRepository.deleteFolder(folderToDelete.folder.id);
+    // If currently inside the deleted folder or any of its descendants, redirect up
+    if (currentFolderId === folderToDelete.folder.id) {
+      const parentUrl = folderToDelete.folder.parentId
+        ? `/lectures?folder=${folderToDelete.folder.parentId}`
+        : '/lectures';
+      router.push(parentUrl);
+    }
+    loadData();
+    setFolderToDelete(null);
+  };
+
+  // Move operations
+  const handleOpenMoveFolder = (folder: StudyFolder, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMoveItem({
+      type: 'folder',
+      id: folder.id,
+      title: folder.name,
+      currentParentId: folder.parentId,
+    });
+    setMoveModalOpen(true);
+  };
+
+  const handleOpenMoveLecture = (lecture: Lecture, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMoveItem({
+      type: 'lecture',
+      id: lecture.id,
+      title: lecture.title,
+      currentParentId: lecture.folderId || null,
+    });
+    setMoveModalOpen(true);
+  };
+
+  const handleExecuteMove = (targetFolderId: string | null) => {
+    if (!moveItem) return;
+    if (moveItem.type === 'folder') {
+      LectureRepository.moveFolder(moveItem.id, targetFolderId);
+    } else {
+      LectureRepository.moveLecture(moveItem.id, targetFolderId);
+    }
+    loadData();
+    setMoveItem(null);
+  };
+
+  // Lecture Actions
+  const handleDeleteLecture = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm('هل تريد حذف هذه المحاضرة؟')) {
+      LectureRepository.deleteLecture(id);
+      loadData();
+    }
+  };
+
+  const handleOpenRenameLecture = (lecture: Lecture, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setLectureToRename(lecture);
+    setRenameLectureModalOpen(true);
+  };
+
+  const handleExecuteRenameLecture = (newTitle: string) => {
+    if (!lectureToRename) return;
+    LectureRepository.renameLecture(lectureToRename.id, newTitle);
+    loadData();
+    setLectureToRename(null);
+  };
+
+  // 1-Click Starter Template
+  const handleApplyTemplate = () => {
+    if (confirm('سيتم إنشاء التقسيم الدراسي النموذجي (السنوات الدراسية والمواد). هل ترغب في المتابعة؟')) {
+      LectureRepository.applyAcademicTemplate();
+      loadData();
+    }
+  };
+
+  // In-folder contextual file upload
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsUploading(true);
-    setUploadProgress(10);
-    setUploadStepMessage('جاري قراءة الملف والتحقق من التنسيق...');
+    setIsProcessing(true);
+    setActiveStep(0);
 
     try {
       const fileName = file.name;
       const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
 
-      await new Promise((res) => setTimeout(res, 600));
-      setUploadProgress(30);
-      setUploadStepMessage('جاري استخراج شرائح المحاضرة والجداول...');
+      await new Promise((res) => setTimeout(res, 400));
+      setActiveStep(1);
 
       const arrayBuffer = await file.arrayBuffer();
       let extractedSlidesData: {
@@ -76,60 +306,52 @@ export default function LecturesPage() {
         }));
       }
 
-      // If PPTX had no slides or file is PDF/DOCX/TXT
+      await new Promise((res) => setTimeout(res, 500));
+      setActiveStep(2);
+
+      const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+
       if (extractedSlidesData.length === 0) {
-        // Create sample structured extracted slides from file name
-        const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
         extractedSlidesData = [
           {
             slideNumber: 1,
-            title: `${cleanName} - Introduction`,
+            title: `${cleanName} - Overview`,
             textBlocks: [
               `Nursing Management and Clinical Guidelines for ${cleanName}.`,
               'Initial patient assessment, baseline vital signs monitoring, and safety precautions.',
-              'Prioritization of nursing interventions according to hospital protocols.',
+              'Prioritization of nursing interventions according to clinical protocols.',
             ],
           },
           {
             slideNumber: 2,
             title: 'Clinical Assessment & Diagnostic Findings',
             textBlocks: [
-              'Comprehensive head-to-toe physical examination and focused assessment.',
-              'Laboratory investigations: ABG, Electrolytes, Serum Lactate, and CBC analysis.',
-              'Monitoring continuous Mean Arterial Pressure (MAP) and oxygenation saturation.',
-            ],
-          },
-          {
-            slideNumber: 3,
-            title: 'Priority Nursing Interventions & Safety Protocols',
-            textBlocks: [
-              'Airway maintenance and high-flow supplemental oxygen delivery.',
-              'Vascular access establishment with large-bore catheters for emergency infusions.',
-              'Strict intake and output charting via Foley catheter.',
+              'Comprehensive physical examination and monitoring of clinical indicators.',
+              'Laboratory evaluations, arterial blood gases, and fluid balance records.',
+              'Critical patient safety alarms and prevention of complications.',
             ],
           },
         ];
       }
 
-      setUploadProgress(60);
-      setUploadStepMessage('جاري الترجمة الطبية الدقيقة واستخراج المصطلحات التمريضية...');
-      await new Promise((res) => setTimeout(res, 800));
+      await new Promise((res) => setTimeout(res, 500));
+      setActiveStep(3);
 
-      setUploadProgress(85);
-      setUploadStepMessage('جاري إعداد الأسئلة المتوقعة والتحقق من الإجابات...');
-      await new Promise((res) => setTimeout(res, 600));
+      const subjectName =
+        currentFolder && currentFolder.type === 'subject'
+          ? currentFolder.name
+          : 'Nursing Care / تمريض سريري';
 
-      // Build Slides
       const newSlides: Slide[] = extractedSlidesData.map((s) => ({
         id: formatSlideId(s.slideNumber - 1),
         lectureId: `lecture_${Date.now()}`,
         slideNumber: s.slideNumber,
         title: s.title,
         originalEnglish: s.textBlocks.join('\n\n'),
-        arabicTranslation: `المحتوى الطبي الأكاديمي المعتمد للشريحة رقم ${s.slideNumber}: يشمل التدخلات التمريضية ذات الأولوية، ومراقبة العلامات الحيوية، وتأمين سلامة المريض وفق البروتوكولات الإكلينيكية المعمول بها في أقسام العناية والطوارئ.`,
+        arabicTranslation: `المحتوى الطبي الأكاديمي للشريحة ${s.slideNumber}: يشمل التدخلات التمريضية السريعة ومراقبة المؤشرات الحيوية لضمان سلامة المريض.`,
         bullets: s.textBlocks.map((b) => ({
           en: b,
-          ar: `نقطة تمريضية هامة: ${b}`,
+          ar: `نقطة تمريضية أساسية: ${b}`,
         })),
         verification: { requiresVerification: false },
         examFocus: [
@@ -141,9 +363,9 @@ export default function LecturesPage() {
           },
         ],
         explanation: {
-          simpleEnglish: `Summary of slide ${s.slideNumber} regarding priority clinical nursing care.`,
+          simpleEnglish: `Summary of slide ${s.slideNumber} regarding clinical priority care.`,
           arabic: `شرح مبسط لمفاهيم الشريحة ${s.slideNumber}.`,
-          egyptianArabic: `بمعنى مبسط يا زمايلنا في الشريحة رقم ${s.slideNumber}: أهم نقطة التركيز على العلامات الحيوية للمريض ومتابعة السوائل باستمرار لمنع أي مضاعفات مفاجئة.`,
+          egyptianArabic: `يا زمايلنا في الشريحة رقم ${s.slideNumber}: ركزوا على مراقبة العلامات الحيوية وملاحظة أي تغير سريع في حالة المريض.`,
         },
         terms: [
           {
@@ -152,26 +374,28 @@ export default function LecturesPage() {
             sourceSlideNumber: s.slideNumber,
             english: 'Clinical Assessment',
             arabic: 'التقييم السريري التمريضي',
-            ipa: '/ˈklɪnɪkəl əˈsɛsmənt/',
-            definitionEn: 'Systematic examination of patient symptoms and vital indicators.',
+            definitionEn: 'Systematic examination of patient symptoms.',
             definitionAr: 'الفحص المنهجي الشامل لعلامات المريض وحالته الصحية العامة.',
             isBookmarked: false,
           },
         ],
       }));
 
-      // Create Lecture Object
-      const cleanTitle = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+      await new Promise((res) => setTimeout(res, 500));
+      setActiveStep(4);
+
       const newLecture: Lecture = {
         id: `lecture_${Date.now()}`,
-        title: cleanTitle,
-        subject: 'Adult Nursing / تمريض باطني وجراحي',
+        folderId: currentFolderId, // Contextual placement!
+        title: cleanName,
+        subject: subjectName,
         slideCount: newSlides.length,
         status: 'completed',
         progress: 100,
         currentStepMessage: 'جاهزة للدراسة',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
         sourceFileName: fileName,
         fileSize: file.size,
         fileType: (fileExt as 'pdf' | 'pptx' | 'docx') || 'pptx',
@@ -186,19 +410,19 @@ export default function LecturesPage() {
             sourceSlideNumber: 1,
             type: 'mcq',
             difficulty: 'medium',
-            questionEn: `What is the primary nursing priority in the initial management of ${cleanTitle}?`,
-            questionAr: `ما هي الأولوية التمريضية الأولى في التعامل المبدئي مع ${cleanTitle}؟`,
+            questionEn: `What is the initial nursing priority in ${cleanName}?`,
+            questionAr: `ما هي الأولوية التمريضية الأولى في التعامل مع ${cleanName}؟`,
             options: [
               { id: 'A', textEn: 'Immediate vital signs and airway assessment', textAr: 'التقييم الفوري للعلامات الحيوية ومجرى التنفس' },
-              { id: 'B', textEn: 'Delayed routine documentation', textAr: 'تأجيل التوثيق' },
-              { id: 'C', textEn: 'Discharging the patient prematurely', textAr: 'خروج المريض فوراً' },
-              { id: 'D', textEn: 'Ignoring urine output changes', textAr: 'إهمال قياس البول' },
+              { id: 'B', textEn: 'Routine non-urgent paperwork', textAr: 'تأجيل الإجراءات التمريضية' },
+              { id: 'C', textEn: 'Immediate discharge', textAr: 'خروج المريض فوراً' },
+              { id: 'D', textEn: 'Neglect monitoring', textAr: 'إهمال المراقبة' },
             ],
             correctAnswer: 'A',
-            explanationEn: 'Airway, breathing, and vital signs stabilization are always the first clinical priority.',
-            explanationAr: 'تأمين مجرى الهواء والتنفس واستقرار العلامات الحيوية هي دائماً الأولوية التمريضية الأولى.',
+            explanationEn: 'Airway, breathing, and vital signs are the first priority.',
+            explanationAr: 'تأمين مجرى الهواء واستقرار العلامات الحيوية هي الأولوية الأولى.',
             isValidated: true,
-            validationSourceQuote: 'Initial patient assessment, baseline vital signs monitoring, and safety precautions.',
+            validationSourceQuote: 'Initial patient assessment, baseline vital signs monitoring.',
           },
         ],
         summary: {
@@ -207,8 +431,8 @@ export default function LecturesPage() {
             titleAr: 'مراجعة سريعة للمحاضرة',
             points: [
               {
-                en: `Core concepts of ${cleanTitle} for nursing students.`,
-                ar: `أهم المفاهيم الإكلينيكية الأساسية لـ ${cleanTitle}.`,
+                en: `Core concepts of ${cleanName} for nursing students.`,
+                ar: `أهم المفاهيم الإكلينيكية الأساسية لـ ${cleanName}.`,
               },
             ],
           },
@@ -217,273 +441,637 @@ export default function LecturesPage() {
               {
                 headingEn: 'Clinical Summary',
                 headingAr: 'الملخص الإكلينيكي',
-                contentEn: `Comprehensive summary of ${cleanTitle}.`,
-                contentAr: `ملخص شامل لمفاهيم ومحاور ${cleanTitle}.`,
+                contentEn: `Comprehensive summary of ${cleanName}.`,
+                contentAr: `ملخص شامل لمفاهيم ومحاور ${cleanName}.`,
               },
             ],
           },
           detailedReview: {
             clinicalKeyPoints: [
               {
-                en: 'Target adequate tissue perfusion and vital stabilization.',
-                ar: 'الهدف الأساسي هو تحقيق التروية النسيجية الكافية واستقرار المريض.',
+                en: 'Maintain continuous patient monitoring.',
+                ar: 'الحفاظ على المراقبة السريرية المستمرة للمريض.',
               },
             ],
             nursingPearls: [
               {
-                en: 'Early assessment prevents clinical deterioration.',
-                ar: 'التقييم المبكر يمنع التدهور السريري الحرج.',
+                en: 'Early detection protects against critical complications.',
+                ar: 'الاكتشاف المبكر يحمي المريض من المضاعفات الخطرة.',
               },
             ],
             emergencyAlerts: [
               {
-                en: 'Notify physician immediately if vitals trend negatively.',
-                ar: 'إبلاغ الطبيب فوراً عند أي تدهور مفاجئ في العلامات الحيوية.',
+                en: 'Alert senior physician on any vitals anomaly.',
+                ar: 'استدعاء الطبيب المعالج فور رصد أي اضطراب في العلامات الحيوية.',
               },
             ],
           },
         },
-        youtubeResources: [
-          {
-            id: 'yt_gen_1',
-            title: `${cleanTitle} - Nursing Care Lecture`,
-            channelTitle: 'Nursing Education Egypt',
-            thumbnailUrl: 'https://img.youtube.com/vi/qQ8uYf8F2L8/mqdefault.jpg',
-            videoUrl: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(cleanTitle),
-            duration: '15:20',
-            relevanceTopic: 'Clinical Review',
-          },
-        ],
+        youtubeResources: [],
       };
 
       LectureRepository.saveLecture(newLecture);
-      setUploadProgress(100);
-      setUploadStepMessage('تمت المعالجة بنجاح!');
-
-      await new Promise((res) => setTimeout(res, 500));
-      setIsUploading(false);
-      refreshLectures();
+      await new Promise((res) => setTimeout(res, 400));
+      router.push(`/lectures/${newLecture.id}`);
     } catch (err) {
       console.error(err);
-      alert('تعذر معالجة المحاضرة. يرجى التأكد من سلامة الملف والمحاولة مرة أخرى.');
-      setIsUploading(false);
-    }
-  };
-
-  const handleDelete = (id: string) => {
-    if (confirm('هل أنت متأكد من حذف هذه المحاضرة؟ سيتم حذف جميع الشرائح والأسئلة المرتبطة بها.')) {
-      LectureRepository.deleteLecture(id);
-      refreshLectures();
-    }
-  };
-
-  const handleToggleBookmark = (id: string) => {
-    LectureRepository.toggleBookmarkLecture(id);
-    refreshLectures();
-  };
-
-  const handleShare = (lecture: Lecture) => {
-    if (typeof window !== 'undefined') {
-      const shareUrl = `${window.location.origin}/lectures/${lecture.id}`;
-      navigator.clipboard.writeText(shareUrl);
-      setCopiedShareId(lecture.id);
-      setTimeout(() => setCopiedShareId(null), 2500);
-    }
-  };
-
-  const handleSaveRename = (id: string) => {
-    if (newTitleInput.trim()) {
-      LectureRepository.renameLecture(id, newTitleInput.trim());
-      setRenameTargetId(null);
-      setNewTitleInput('');
-      refreshLectures();
+      alert('حصلت مشكلة أثناء المعالجة. يرجى المحاولة مرة أخرى.');
+      setIsProcessing(false);
     }
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto pb-12">
-      {/* Header & Upload Action */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <BookOpen className="w-6 h-6 text-sky-600" />
-            <span>مكتبة المحاضرات (My Lectures)</span>
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            جميع محاضراتك المترجمة والمدققة، مع إمكانية المراجعة والاختبار ومشاركة الروابط
-          </p>
-        </div>
+    <div className="max-w-4xl mx-auto space-y-6 pb-16">
+      {/* Hidden file input */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileSelect}
+        accept=".pdf,.pptx,.ppt,.docx"
+        className="hidden"
+      />
 
-        {/* Upload Button */}
-        <div>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".pdf,.pptx,.ppt,.docx,.txt"
-            className="hidden"
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="px-5 py-3 rounded-2xl bg-sky-700 hover:bg-sky-800 text-white font-bold text-xs sm:text-sm flex items-center gap-2 shadow-md shadow-sky-700/20 transition-all transform hover:-translate-y-0.5"
-          >
-            <Upload className="w-4 h-4" />
-            <span>رفع محاضرة جديدة (PDF / PPTX)</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Uploading Progress Box (Rule 8 & 39) */}
-      {isUploading && (
-        <div className="p-6 rounded-3xl bg-sky-50 dark:bg-slate-900 border border-sky-200 dark:border-sky-900/60 shadow-lg space-y-4 animate-fade-in">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <Loader2 className="w-5 h-5 text-sky-600 animate-spin" />
-              <span className="text-sm font-bold text-sky-950 dark:text-sky-200">
-                {uploadStepMessage}
-              </span>
+      {/* PROCESSING STATE (Rule 7) */}
+      {isProcessing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+          <div className="max-w-md w-full p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-6 text-center">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+                جاري تجهيز المحاضرة داخل {currentFolder ? `"${currentFolder.name}"` : 'مكتبتك'}...
+              </h2>
+              <p className="text-xs text-slate-400">
+                ثوانٍ وتكون المحاضرة جاهزة للدراسة
+              </p>
             </div>
-            <span className="text-xs font-bold font-inter text-sky-700 dark:text-sky-300">
-              {uploadProgress}%
-            </span>
-          </div>
 
-          <div className="w-full bg-sky-200 dark:bg-slate-800 h-2.5 rounded-full overflow-hidden">
-            <div
-              className="bg-sky-600 h-full rounded-full transition-all duration-300"
-              style={{ width: `${uploadProgress}%` }}
-            />
-          </div>
+            <div className="space-y-2.5 text-right max-w-xs mx-auto text-xs sm:text-sm">
+              {progressSteps.map((step, idx) => {
+                const isDone = idx < activeStep;
+                const isCurrent = idx === activeStep;
 
-          <p className="text-[11px] text-slate-500 text-center">
-            يرجى الانتظار قليلاً بينما تتم معالجة الشرائح واستخراج الترجمات الطبية الدقيقة...
-          </p>
+                return (
+                  <div
+                    key={idx}
+                    className={`flex items-center justify-between p-2.5 rounded-xl transition-all ${
+                      isCurrent
+                        ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300 font-bold'
+                        : isDone
+                        ? 'text-slate-700 dark:text-slate-300'
+                        : 'text-slate-400 opacity-60'
+                    }`}
+                  >
+                    <span>{step}</span>
+                    {isDone ? (
+                      <Check className="w-4 h-4 text-emerald-600 font-bold" />
+                    ) : isCurrent ? (
+                      <Loader2 className="w-4 h-4 text-sky-600 animate-spin" />
+                    ) : (
+                      <span className="text-xs text-slate-300">•</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Lectures Grid (Rule 22) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {lectures.map((lecture) => (
-          <div
-            key={lecture.id}
-            className="p-5 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-sky-300 dark:hover:border-sky-700 transition-all flex flex-col justify-between space-y-4 group"
+      {/* TOP HEADER: Breadcrumbs & Action Buttons */}
+      <div className="space-y-3">
+        {/* Desktop Breadcrumb (Rule 8) */}
+        <div className="hidden sm:flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400 overflow-x-auto py-1">
+          <Link
+            href="/lectures"
+            className={`hover:text-sky-600 transition-colors ${
+              !currentFolderId ? 'text-slate-900 dark:text-white font-bold' : ''
+            }`}
           >
-            <div className="space-y-3">
-              {/* Header tags & Actions */}
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300 border border-sky-100 dark:border-sky-900/40">
-                  {lecture.subject}
-                </span>
+            مكتبتي الدراسية
+          </Link>
 
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => handleToggleBookmark(lecture.id)}
-                    aria-label="إشارة مرجعية"
-                    className={cn(
-                      'w-8 h-8 rounded-xl flex items-center justify-center transition-colors',
-                      lecture.isBookmarked
-                        ? 'text-purple-600 bg-purple-50 dark:bg-purple-950/60'
-                        : 'text-slate-400 hover:text-purple-600'
-                    )}
+          {breadcrumbPath.map((item, idx) => {
+            const isLast = idx === breadcrumbPath.length - 1;
+            return (
+              <React.Fragment key={item.id}>
+                <span className="text-slate-300 dark:text-slate-600">/</span>
+                {isLast ? (
+                  <span className="text-sky-700 dark:text-sky-400 font-bold">
+                    {item.name}
+                  </span>
+                ) : (
+                  <Link
+                    href={`/lectures?folder=${item.id}`}
+                    className="hover:text-sky-600 transition-colors"
                   >
-                    <Bookmark className="w-4 h-4" fill={lecture.isBookmarked ? 'currentColor' : 'none'} />
-                  </button>
+                    {item.name}
+                  </Link>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
 
-                  <button
-                    onClick={() => {
-                      setRenameTargetId(lecture.id);
-                      setNewTitleInput(lecture.title);
-                    }}
-                    aria-label="إعادة التسمية"
-                    className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
+        {/* Mobile Header: Back Button + Title (Rule 8) */}
+        <div className="sm:hidden flex items-center justify-between">
+          {currentFolder ? (
+            <Link
+              href={parentFolder ? `/lectures?folder=${parentFolder.id}` : '/lectures'}
+              className="flex items-center gap-1 text-xs font-bold text-sky-700 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 px-3 py-1.5 rounded-xl transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>رجوع إلى {parentFolder ? parentFolder.name : 'مكتبتي'}</span>
+            </Link>
+          ) : (
+            <span className="text-xs font-bold text-slate-400">المكتبة الرئيسية</span>
+          )}
+        </div>
 
-                  <button
-                    onClick={() => handleShare(lecture)}
-                    aria-label="مشاركة"
-                    className="relative w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-sky-600 transition-colors"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    {copiedShareId === lecture.id && (
-                      <span className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] px-2 py-0.5 rounded shadow whitespace-nowrap">
-                        تم النسخ!
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={() => handleDelete(lecture.id)}
-                    aria-label="حذف"
-                    className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-rose-600 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Title / Rename View */}
-              {renameTargetId === lecture.id ? (
-                <div className="space-y-2">
-                  <input
-                    type="text"
-                    value={newTitleInput}
-                    onChange={(e) => setNewTitleInput(e.target.value)}
-                    className="w-full p-2.5 rounded-xl border border-sky-500 text-xs font-bold dark:bg-slate-800"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleSaveRename(lecture.id)}
-                      className="px-3 py-1 bg-sky-600 text-white text-xs font-bold rounded-lg"
-                    >
-                      حفظ
-                    </button>
-                    <button
-                      onClick={() => setRenameTargetId(null)}
-                      className="px-3 py-1 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-lg"
-                    >
-                      إلغاء
-                    </button>
-                  </div>
-                </div>
+        {/* Main Header Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div className="space-y-0.5">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              {currentFolder ? (
+                <>
+                  {currentFolder.type === 'subject' ? (
+                    <BookMarked className="w-6 h-6 text-purple-600 shrink-0" />
+                  ) : (
+                    <Folder className="w-6 h-6 text-sky-600 shrink-0" />
+                  )}
+                  <span>{currentFolder.name}</span>
+                </>
               ) : (
-                <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-sky-600 transition-colors line-clamp-2">
-                  {lecture.title}
-                </h3>
+                <span>مكتبتي الدراسية</span>
               )}
+            </h1>
+            <p className="text-xs text-slate-400">
+              {currentSubfolders.length > 0 && `${currentSubfolders.length} أقسام ومواد • `}
+              {currentLectures.length} محاضرة
+            </p>
+          </div>
 
-              {/* Meta information */}
-              <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 pt-1 font-inter">
-                <span>{lecture.slideCount} Slides</span>
-                <span>•</span>
-                <span>{lecture.terms?.length || 0} Terms</span>
-                <span>•</span>
-                <span>{lecture.questions?.length || 0} Questions</span>
+          {/* Primary Action Buttons (Rule 1 & 3) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => handleOpenCreateFolder('folder')}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold transition-all shadow-xs"
+            >
+              <FolderPlus className="w-4 h-4 text-sky-600" />
+              <span>+ فولدر</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenCreateFolder('subject')}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-purple-50 dark:bg-purple-950/60 hover:bg-purple-100 dark:hover:bg-purple-900/40 text-purple-700 dark:text-purple-300 text-xs font-bold transition-all shadow-xs"
+            >
+              <BookMarked className="w-4 h-4 text-purple-600" />
+              <span>+ مادة</span>
+            </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold shadow-xs transition-all"
+            >
+              <Upload className="w-4 h-4" />
+              <span>{currentFolder ? 'رفع محاضرة هنا' : 'رفع محاضرة'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* SEARCH ACROSS LIBRARY (Rule 9) */}
+      <div className="relative">
+        <Search className="w-4 h-4 absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="ابحث عن محاضرة أو مادة في المكتبة..."
+          className="w-full pr-11 pl-10 py-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-slate-800 dark:text-slate-200 text-xs sm:text-sm focus:outline-hidden focus:ring-2 focus:ring-sky-500 transition-all text-right shadow-xs placeholder:text-slate-400"
+        />
+        {searchQuery && (
+          <button
+            onClick={() => setSearchQuery('')}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {/* SEARCH RESULTS VIEW (Rule 9) */}
+      {searchResults ? (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h2 className="text-xs font-bold text-slate-500 dark:text-slate-400">
+              نتائج البحث عن &ldquo;{searchQuery}&rdquo;
+            </h2>
+            <span className="text-xs text-slate-400">
+              {searchResults.matchedFolders.length + searchResults.matchedLectures.length} نتيجة
+            </span>
+          </div>
+
+          {searchResults.matchedFolders.length === 0 && searchResults.matchedLectures.length === 0 ? (
+            <div className="p-8 text-center rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-slate-400 text-xs">
+              لم نعثر على أي نتائج مطابقة لكلمة البحث
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {/* Folders matches */}
+              {searchResults.matchedFolders.map(({ item, pathString }) => (
+                <Link
+                  key={item.id}
+                  href={`/lectures?folder=${item.id}`}
+                  onClick={() => setSearchQuery('')}
+                  className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs flex items-center justify-between transition-all group"
+                >
+                  <div className="flex items-center gap-3 min-w-0 pr-1">
+                    <div className="w-9 h-9 rounded-xl bg-sky-50 dark:bg-sky-950/60 flex items-center justify-center text-sky-600 shrink-0">
+                      {item.type === 'subject' ? (
+                        <BookMarked className="w-5 h-5 text-purple-600" />
+                      ) : (
+                        <Folder className="w-5 h-5 text-sky-600" />
+                      )}
+                    </div>
+                    <div className="space-y-0.5 truncate">
+                      <div className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 transition-colors truncate">
+                        {item.name}
+                      </div>
+                      <div className="text-[11px] text-slate-400 truncate">
+                        {pathString}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronLeft className="w-4 h-4 text-slate-300 group-hover:text-sky-600 shrink-0" />
+                </Link>
+              ))}
+
+              {/* Lectures matches */}
+              {searchResults.matchedLectures.map(({ item, pathString }) => (
+                <Link
+                  key={item.id}
+                  href={`/lectures/${item.id}`}
+                  onClick={() => setSearchQuery('')}
+                  className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs flex items-center justify-between transition-all group"
+                >
+                  <div className="flex items-center gap-3 min-w-0 pr-1">
+                    <div className="w-9 h-9 rounded-xl bg-slate-50 dark:bg-slate-800 flex items-center justify-center text-slate-500 shrink-0">
+                      <BookOpen className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-0.5 truncate">
+                      <div className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 transition-colors truncate">
+                        {item.title}
+                      </div>
+                      <div className="text-[11px] text-slate-400 truncate">
+                        {pathString}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronLeft className="w-4 h-4 text-slate-300 group-hover:text-sky-600 shrink-0" />
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* NORMAL HIERARCHICAL BROWSER VIEW */
+        <div className="space-y-6">
+          {/* OPTIONAL STARTER TEMPLATE BANNER (Rule 10) */}
+          {allFolders.length <= 2 && !currentFolderId && (
+            <div className="p-4 sm:p-5 rounded-3xl bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-sky-950/40 dark:to-indigo-950/40 border border-sky-100 dark:border-sky-900/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    تريد تنظيم دراسي جاهز؟
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    يمكنك بضغطة واحدة تطبيق تقسيم السنوات الدراسية الأربعة وأهم المواد.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleApplyTemplate}
+                className="px-4 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold shrink-0 transition-all shadow-xs"
+              >
+                تطبيق تقسيم السنوات الدراسية
+              </button>
+            </div>
+          )}
+
+          {/* SUBFOLDERS & SUBJECTS SECTION */}
+          {currentSubfolders.length > 0 && (
+            <div className="space-y-3">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">
+                {currentFolder ? 'الأقسام والمواد الفرعية' : 'السنوات والأقسام الرئيسية'}
+              </h2>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {currentSubfolders.map((folder) => {
+                  const stats = LectureRepository.getFolderStats(folder.id);
+                  const isMenuOpen = activeMenuId === `folder_${folder.id}`;
+
+                  return (
+                    <div
+                      key={folder.id}
+                      className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs transition-all flex flex-col justify-between group relative"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <Link
+                          href={`/lectures?folder=${folder.id}`}
+                          className="flex items-center gap-2.5 min-w-0 flex-1"
+                        >
+                          <div
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                              folder.type === 'subject'
+                                ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-600'
+                                : 'bg-sky-50 dark:bg-sky-950/60 text-sky-600'
+                            }`}
+                          >
+                            {folder.type === 'subject' ? (
+                              <BookMarked className="w-5 h-5" />
+                            ) : (
+                              <Folder className="w-5 h-5" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 transition-colors truncate">
+                              {folder.name}
+                            </h3>
+                            <p className="text-[11px] text-slate-400">
+                              {folder.type === 'subject' ? 'مادة' : 'فولدر'} • {stats.lectureCount} محاضرة
+                              {stats.subfolderCount > 0 && ` • ${stats.subfolderCount} فرعي`}
+                            </p>
+                          </div>
+                        </Link>
+
+                        {/* Three-dots Menu */}
+                        <div className="relative shrink-0">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuId(isMenuOpen ? null : `folder_${folder.id}`);
+                            }}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                            aria-label="خيارات"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+
+                          {isMenuOpen && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute left-0 top-8 z-30 w-36 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl py-1 text-right animate-scale-in"
+                            >
+                              <Link
+                                href={`/lectures?folder=${folder.id}`}
+                                className="w-full px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <ChevronLeft className="w-3.5 h-3.5" />
+                                <span>فتح</span>
+                              </Link>
+                              <button
+                                onClick={(e) => {
+                                  handleOpenMoveFolder(folder, e);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <Move className="w-3.5 h-3.5" />
+                                <span>نقل</span>
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenEditFolder(folder);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>تعديل الاسم</span>
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  handleRequestDeleteFolder(folder, e);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-2"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>حذف</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+          )}
 
-            {/* Bottom Actions */}
-            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
-              <Link
-                href={`/lectures/${lecture.id}`}
-                className="flex-1 py-2.5 px-3 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
-              >
-                <BookOpen className="w-4 h-4" />
-                <span>مذاكرة المحاضرة</span>
-              </Link>
-
-              <Link
-                href={`/lectures/${lecture.id}/exam`}
-                className="py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 text-xs font-bold border border-amber-200 dark:border-amber-800 transition-colors"
-              >
-                <span>اختبار</span>
-              </Link>
+          {/* LECTURES IN CURRENT FOLDER */}
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between px-1">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                {currentFolder ? `محاضرات ${currentFolder.name}` : 'محاضرات عامة'}
+              </h2>
+              <span className="text-xs text-slate-400 font-medium">
+                {currentLectures.length} محاضرة
+              </span>
             </div>
+
+            {currentLectures.length === 0 ? (
+              <div className="py-12 text-center space-y-4 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+                <BookOpen className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto" />
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                    لا توجد محاضرات هنا حتى الآن
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    ارفع محاضرة جديدة وسيتم حفظها هنا مباشرة
+                  </p>
+                </div>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-2xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold shadow-xs transition-all"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>+ رفع محاضرة هنا</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {currentLectures.map((lecture) => {
+                  const isMenuOpen = activeMenuId === `lecture_${lecture.id}`;
+
+                  return (
+                    <div
+                      key={lecture.id}
+                      className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs flex items-center justify-between transition-all group relative"
+                    >
+                      <Link
+                        href={`/lectures/${lecture.id}`}
+                        className="space-y-1 min-w-0 pr-1 flex-1"
+                      >
+                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 transition-colors truncate">
+                          {lecture.title}
+                        </h3>
+                        <p className="text-xs text-slate-400 truncate">
+                          {lecture.subject} • {lecture.slideCount} شرائح
+                        </p>
+                      </Link>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* 1-Tap Study Action */}
+                        <Link
+                          href={`/lectures/${lecture.id}`}
+                          className="px-3.5 py-1.5 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 text-xs font-bold flex items-center gap-1 group-hover:bg-sky-700 group-hover:text-white transition-colors"
+                        >
+                          <span>مذاكرة</span>
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </Link>
+
+                        {/* Three-dots Menu */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuId(isMenuOpen ? null : `lecture_${lecture.id}`);
+                            }}
+                            className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                            aria-label="خيارات المحاضرة"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+
+                          {isMenuOpen && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute left-0 top-9 z-30 w-36 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl py-1 text-right animate-scale-in"
+                            >
+                              <Link
+                                href={`/lectures/${lecture.id}`}
+                                className="w-full px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <BookOpen className="w-3.5 h-3.5" />
+                                <span>فتح</span>
+                              </Link>
+                              <button
+                                onClick={(e) => {
+                                  handleOpenMoveLecture(lecture, e);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <Move className="w-3.5 h-3.5" />
+                                <span>نقل إلى فولدر</span>
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  handleOpenRenameLecture(lecture, e);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/60 flex items-center gap-2"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>إعادة تسمية</span>
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  handleDeleteLecture(lecture.id, e);
+                                  setActiveMenuId(null);
+                                }}
+                                className="w-full px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-2"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>حذف</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        ))}
-      </div>
+        </div>
+      )}
+
+      {/* MODALS */}
+      <FolderModal
+        isOpen={folderModalOpen}
+        onClose={() => setFolderModalOpen(false)}
+        onSubmit={handleFolderSubmit}
+        mode={folderModalMode}
+        initialName={activeFolderToEdit?.name || ''}
+        initialType={activeFolderToEdit?.type || folderModalType}
+        initialColor={activeFolderToEdit?.color || 'sky'}
+        parentFolderName={currentFolder ? currentFolder.name : null}
+      />
+
+      {moveItem && (
+        <MoveModal
+          isOpen={moveModalOpen}
+          onClose={() => {
+            setMoveModalOpen(false);
+            setMoveItem(null);
+          }}
+          itemType={moveItem.type}
+          itemId={moveItem.id}
+          itemTitle={moveItem.title}
+          currentParentId={moveItem.currentParentId}
+          onMove={handleExecuteMove}
+        />
+      )}
+
+      {folderToDelete && (
+        <DeleteSafetyModal
+          isOpen={deleteModalOpen}
+          onClose={() => {
+            setDeleteModalOpen(false);
+            setFolderToDelete(null);
+          }}
+          onConfirm={handleConfirmDeleteFolder}
+          folderName={folderToDelete.folder.name}
+          folderType={folderToDelete.folder.type}
+          subfolderCount={folderToDelete.stats.subfolderCount}
+          lectureCount={folderToDelete.stats.lectureCount}
+        />
+      )}
+
+      {lectureToRename && (
+        <RenameLectureModal
+          isOpen={renameLectureModalOpen}
+          onClose={() => {
+            setRenameLectureModalOpen(false);
+            setLectureToRename(null);
+          }}
+          onRename={handleExecuteRenameLecture}
+          currentTitle={lectureToRename.title}
+        />
+      )}
     </div>
+  );
+}
+
+export default function LecturesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-16 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+          <span>جاري تحميل مكتبتك الدراسية...</span>
+        </div>
+      }
+    >
+      <LibraryContent />
+    </Suspense>
   );
 }

@@ -139,8 +139,23 @@ export interface YouTubeVideo {
   relevanceTopic: string;
 }
 
+export interface StudyFolder {
+  id: string;
+  userId?: string;
+  name: string;
+  parentId: string | null; // null = root level
+  type: 'folder' | 'subject';
+  color?: string; // e.g. 'sky', 'emerald', 'purple', 'amber', 'slate'
+  createdAt: string;
+  updatedAt: string;
+  position?: number;
+}
+
 export interface Lecture {
   id: string;
+  userId?: string;
+  folderId?: string | null; // Parent folder or subject ID
+  lastOpenedAt?: string;
   title: string;
   subject: string;
   slideCount: number;

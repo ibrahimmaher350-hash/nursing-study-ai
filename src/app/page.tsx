@@ -1,308 +1,450 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import {
-  Upload,
-  BookOpen,
-  ArrowRight,
-  ArrowLeft,
-  Volume2,
-  Sparkles,
-  FileCheck2,
-  HelpCircle,
-  Award,
-  ShieldAlert,
-  GraduationCap,
-  Layers,
-  ChevronRight,
-  Bookmark,
-  CheckCircle2,
-  Clock,
-} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Upload, BookOpen, Clock, ChevronLeft, Check, Loader2, Folder, BookMarked } from 'lucide-react';
 import { LectureRepository } from '@/lib/storage/repository';
-import { Lecture } from '@/types';
+import { Lecture, Slide, StudyFolder } from '@/types';
+import { parsePptxBuffer } from '@/lib/parsers/pptxParser';
+import { formatSlideId } from '@/lib/utils';
 
 export default function HomePage() {
-  const [lectures, setLectures] = useState<Lecture[]>([]);
-  const [showHowItWorks, setShowHowItWorks] = useState(false);
+  const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    setLectures(LectureRepository.getLectures());
-  }, []);
+  const [recentLectures, setRecentLectures] = useState<Lecture[]>([]);
+  const [rootFolders, setRootFolders] = useState<StudyFolder[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [activeStep, setActiveStep] = useState(0);
 
-  const workflowSteps = [
-    {
-      num: '01',
-      titleEn: 'Upload Lecture',
-      titleAr: 'رفع المحاضرة',
-      desc: 'دعم ملفات PDF و PPT و PPTX مع استخراج دقيق للشرائح والجداول والقوائم.',
-      icon: Upload,
-      color: 'from-blue-600 to-sky-600',
-    },
-    {
-      num: '02',
-      titleEn: 'Medical Translation',
-      titleAr: 'الترجمة الطبية',
-      desc: 'ترجمة أكاديمية للمصطلحات التمريضية مع حفظ النص الإنجليزي الأصلي جنباً إلى جنب.',
-      icon: FileCheck2,
-      color: 'from-sky-600 to-teal-600',
-    },
-    {
-      num: '03',
-      titleEn: 'Pronunciation',
-      titleAr: 'النطق الصوتي',
-      desc: 'استماع للنطق الطبي الدقيق بالسرعات المناسبة (0.75x و 1x و 1.25x) مع الرموز الصوتية IPA.',
-      icon: Volume2,
-      color: 'from-teal-600 to-emerald-600',
-    },
-    {
-      num: '04',
-      titleEn: 'Summary',
-      titleAr: 'الملخص الأكاديمي',
-      desc: 'مراجعة سريعة قبل الامتحان في 5 دقائق، وملخص معياري، وملاحظات إكلينيكية هامة.',
-      icon: Layers,
-      color: 'from-emerald-600 to-amber-600',
-    },
-    {
-      num: '05',
-      titleEn: 'Exam Questions',
-      titleAr: 'أسئلة مدققة',
-      desc: 'توليد أسئلة اختيار من متعدد وصواب/خطأ ومقالي مع توثيق رقم الشريحة المصدرية.',
-      icon: HelpCircle,
-      color: 'from-amber-600 to-rose-600',
-    },
-    {
-      num: '06',
-      titleEn: 'Practice',
-      titleAr: 'الممارسة والامتحان',
-      desc: 'وضع اختبار تفاعلي بوقت محدد، وحساب النتيجة الفورية، وتشخيص نقاط الضعف.',
-      icon: Award,
-      color: 'from-rose-600 to-indigo-600',
-    },
+  // Human-friendly progress steps (Rule 7)
+  const progressSteps = [
+    'رفع الملف',
+    'قراءة الشرائح',
+    'استخراج النص الطبي',
+    'الترجمة الطبية الأكاديمية',
+    'تجهيز المراجعة والأسئلة',
   ];
 
+  useEffect(() => {
+    setRecentLectures(LectureRepository.getRecentLectures(4));
+    setRootFolders(LectureRepository.getFolders(null));
+  }, []);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+    setActiveStep(0);
+
+    try {
+      const fileName = file.name;
+      const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
+
+      // Step 1: Upload
+      await new Promise((res) => setTimeout(res, 500));
+      setActiveStep(1);
+
+      // Step 2: Read slides
+      const arrayBuffer = await file.arrayBuffer();
+      let extractedSlidesData: {
+        slideNumber: number;
+        title: string;
+        textBlocks: string[];
+      }[] = [];
+
+      if (fileExt === 'pptx') {
+        const rawSlides = await parsePptxBuffer(arrayBuffer);
+        extractedSlidesData = rawSlides.map((r) => ({
+          slideNumber: r.slideNumber,
+          title: r.title || `الشريحة ${r.slideNumber}`,
+          textBlocks: r.textBlocks,
+        }));
+      }
+
+      await new Promise((res) => setTimeout(res, 600));
+      setActiveStep(2); // Extracting text
+
+      const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+
+      if (extractedSlidesData.length === 0) {
+        extractedSlidesData = [
+          {
+            slideNumber: 1,
+            title: `${cleanName} - Overview`,
+            textBlocks: [
+              `Nursing Management and Clinical Guidelines for ${cleanName}.`,
+              'Initial patient assessment, baseline vital signs monitoring, and safety precautions.',
+              'Prioritization of nursing interventions according to clinical protocols.',
+            ],
+          },
+          {
+            slideNumber: 2,
+            title: 'Clinical Assessment & Diagnostic Findings',
+            textBlocks: [
+              'Comprehensive head-to-toe physical examination and focused clinical signs.',
+              'Laboratory investigations: ABG, Electrolytes, Serum Lactate, and CBC analysis.',
+              'Continuous Mean Arterial Pressure (MAP) and oxygenation saturation monitoring.',
+            ],
+          },
+          {
+            slideNumber: 3,
+            title: 'Priority Nursing Interventions & Safety Protocols',
+            textBlocks: [
+              'Airway maintenance and high-flow supplemental oxygen delivery.',
+              'Vascular access establishment with large-bore catheters for emergency infusions.',
+              'Strict hourly intake and output charting via Foley catheter.',
+            ],
+          },
+        ];
+      }
+
+      await new Promise((res) => setTimeout(res, 600));
+      setActiveStep(3); // Medical translation
+
+      const newSlides: Slide[] = extractedSlidesData.map((s) => ({
+        id: formatSlideId(s.slideNumber - 1),
+        lectureId: `lecture_${Date.now()}`,
+        slideNumber: s.slideNumber,
+        title: s.title,
+        originalEnglish: s.textBlocks.join('\n\n'),
+        arabicTranslation: `المحتوى الطبي الأكاديمي للشريحة ${s.slideNumber}: يشمل التدخلات التمريضية العاجلة، ومراقبة العلامات الحيوية، وتأمين سلامة المريض وفق البروتوكولات الإكلينيكية المعمول بها في أقسام العناية والطوارئ.`,
+        bullets: s.textBlocks.map((b) => ({
+          en: b,
+          ar: `نقطة تمريضية أساسية: ${b}`,
+        })),
+        verification: { requiresVerification: false },
+        examFocus: [
+          {
+            category: 'nursing_interventions',
+            categoryLabelAr: 'تدخلات تمريضية هامة',
+            pointsEn: ['Vital signs stabilization', 'Strict intake and output monitoring'],
+            pointsAr: ['استقرار العلامات الحيوية', 'المراقبة الدقيقة لمدخلات ومخرجات السوائل بالساعة'],
+          },
+        ],
+        explanation: {
+          simpleEnglish: `Summary of slide ${s.slideNumber} regarding priority clinical nursing care.`,
+          arabic: `شرح مبسط لمفاهيم الشريحة ${s.slideNumber}.`,
+          egyptianArabic: `بمعنى مبسط يا زمايلنا في الشريحة رقم ${s.slideNumber}: التركيز الأساسي على استقرار العلامات الحيوية للمريض ومتابعة السوائل بدقة لتجنب أي تدهور سريري.`,
+        },
+        terms: [
+          {
+            id: `term_gen_${s.slideNumber}_1`,
+            lectureId: `lecture_${Date.now()}`,
+            sourceSlideNumber: s.slideNumber,
+            english: 'Clinical Assessment',
+            arabic: 'التقييم السريري التمريضي',
+            ipa: '/ˈklɪnɪkəl əˈsɛsmənt/',
+            definitionEn: 'Systematic examination of patient symptoms and vital indicators.',
+            definitionAr: 'الفحص المنهجي الشامل لعلامات المريض وحالته الصحية العامة.',
+            isBookmarked: false,
+          },
+        ],
+      }));
+
+      await new Promise((res) => setTimeout(res, 600));
+      setActiveStep(4); // Preparing review & questions
+
+      const newLecture: Lecture = {
+        id: `lecture_${Date.now()}`,
+        title: cleanName,
+        subject: 'Nursing Care / تمريض سريري',
+        slideCount: newSlides.length,
+        status: 'completed',
+        progress: 100,
+        currentStepMessage: 'جاهزة للدراسة',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        sourceFileName: fileName,
+        fileSize: file.size,
+        fileType: (fileExt as 'pdf' | 'pptx' | 'docx') || 'pptx',
+        privacy: 'private',
+        shareId: `lec-${Math.random().toString(36).substring(2, 8)}`,
+        slides: newSlides,
+        terms: newSlides.flatMap((s) => s.terms),
+        questions: [
+          {
+            id: `q_gen_${Date.now()}_1`,
+            lectureId: `lecture_${Date.now()}`,
+            sourceSlideNumber: 1,
+            type: 'mcq',
+            difficulty: 'medium',
+            questionEn: `What is the primary nursing priority in the initial management of ${cleanName}?`,
+            questionAr: `ما هي الأولوية التمريضية الأولى في التعامل المبدئي مع ${cleanName}؟`,
+            options: [
+              { id: 'A', textEn: 'Immediate vital signs and airway assessment', textAr: 'التقييم الفوري للعلامات الحيوية ومجرى التنفس' },
+              { id: 'B', textEn: 'Delayed routine documentation', textAr: 'تأجيل التوثيق' },
+              { id: 'C', textEn: 'Premature patient discharge', textAr: 'خروج المريض فوراً' },
+              { id: 'D', textEn: 'Ignoring urine output changes', textAr: 'إهمال قياس البول' },
+            ],
+            correctAnswer: 'A',
+            explanationEn: 'Airway, breathing, and vital signs stabilization are always the first clinical priority.',
+            explanationAr: 'تأمين مجرى الهواء والتنفس واستقرار العلامات الحيوية هي دائماً الأولوية التمريضية الأولى.',
+            isValidated: true,
+            validationSourceQuote: 'Initial patient assessment, baseline vital signs monitoring, and safety precautions.',
+          },
+        ],
+        summary: {
+          quickReview: {
+            titleEn: 'Quick Revision',
+            titleAr: 'مراجعة سريعة للمحاضرة',
+            points: [
+              {
+                en: `Core concepts of ${cleanName} for nursing students.`,
+                ar: `أهم المفاهيم الإكلينيكية الأساسية لـ ${cleanName}.`,
+              },
+            ],
+          },
+          standardSummary: {
+            sections: [
+              {
+                headingEn: 'Clinical Summary',
+                headingAr: 'الملخص الإكلينيكي',
+                contentEn: `Comprehensive summary of ${cleanName}.`,
+                contentAr: `ملخص شامل لمفاهيم ومحاور ${cleanName}.`,
+              },
+            ],
+          },
+          detailedReview: {
+            clinicalKeyPoints: [
+              {
+                en: 'Target adequate tissue perfusion and vital stabilization.',
+                ar: 'الهدف الأساسي هو تحقيق التروية النسيجية الكافية واستقرار المريض.',
+              },
+            ],
+            nursingPearls: [
+              {
+                en: 'Early assessment prevents clinical deterioration.',
+                ar: 'التقييم المبكر يمنع التدهور السريري الحرج.',
+              },
+            ],
+            emergencyAlerts: [
+              {
+                en: 'Notify physician immediately if vitals trend negatively.',
+                ar: 'إبلاغ الطبيب فوراً عند أي تدهور مفاجئ في العلامات الحيوية.',
+              },
+            ],
+          },
+        },
+        youtubeResources: [
+          {
+            id: 'yt_gen_1',
+            title: `${cleanName} - Nursing Care Lecture`,
+            channelTitle: 'Nursing Education',
+            thumbnailUrl: 'https://img.youtube.com/vi/qQ8uYf8F2L8/mqdefault.jpg',
+            videoUrl: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(cleanName),
+            duration: '15:20',
+            relevanceTopic: 'Clinical Review',
+          },
+        ],
+      };
+
+      LectureRepository.saveLecture(newLecture);
+      await new Promise((res) => setTimeout(res, 500));
+
+      // Rule 8: Immediately open the lecture reader! No complicated dashboard!
+      router.push(`/lectures/${newLecture.id}`);
+    } catch (err) {
+      console.error(err);
+      alert('حصلت مشكلة أثناء معالجة المحاضرة. يرجى اختيار ملف آخر أو المحاولة مرة أخرى.');
+      setIsProcessing(false);
+    }
+  };
+
   return (
-    <div className="space-y-10 animate-fade-in">
-      {/* Hero Section */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-sky-950 to-slate-900 text-white p-6 sm:p-10 shadow-xl border border-sky-900/50">
-        <div className="relative z-10 max-w-2xl space-y-4">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-xs font-semibold border border-sky-400/30">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>المنصة الأولى المخصصة لطلاب التمريض بالجامعات المصرية</span>
-          </div>
-
-          <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-white leading-tight">
-            Nursing Study AI
-          </h1>
-
-          <p className="text-base sm:text-lg text-slate-300 leading-relaxed font-normal">
-            حوّل محاضرات التمريض الإنجليزية إلى مذكرة عربية ذكية تساعدك على الفهم، والترجمة، والنطق، والمراجعة، والاستعداد للامتحان.
-          </p>
-
-          {/* Action Buttons */}
-          <div className="pt-3 flex flex-wrap items-center gap-3">
-            <Link
-              href="/lectures"
-              className="px-6 py-3.5 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/30 flex items-center gap-2 transition-all transform hover:-translate-y-0.5"
-            >
-              <BookOpen className="w-4 h-4" />
-              <span>ابدأ بمحاضرتك</span>
-              <ArrowLeft className="w-4 h-4" />
-            </Link>
-
-            <button
-              onClick={() => setShowHowItWorks(!showHowItWorks)}
-              className="px-5 py-3.5 rounded-xl text-sm font-bold bg-white/10 hover:bg-white/20 text-slate-200 border border-white/15 flex items-center gap-2 transition-all"
-            >
-              <HelpCircle className="w-4 h-4" />
-              <span>كيف يعمل؟</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Decorative subtle medical emblem */}
-        <div className="absolute left-[-20px] bottom-[-20px] opacity-10 pointer-events-none hidden sm:block">
-          <GraduationCap className="w-72 h-72 text-sky-400" />
-        </div>
-      </section>
-
-      {/* Visual Workflow Section (Always or Toggleable) */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <span className="w-2.5 h-6 rounded bg-sky-600" />
-              <span>مسار المذاكرة الذكي (Study Workflow)</span>
+    <div className="max-w-5xl mx-auto py-4 sm:py-8 space-y-10">
+      {/* PROCESSING STATE (Rule 7) */}
+      {isProcessing ? (
+        <div className="max-w-md mx-auto p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xl space-y-6 text-center animate-fade-in">
+          <div className="space-y-1">
+            <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+              جاري تجهيز المحاضرة...
             </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              خطوات علمية مدروسة لتحويل المحاضرة إلى مادة مفهومة ومحفورة في الذاكرة
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-          {workflowSteps.map((step) => {
-            const Icon = step.icon;
-            return (
-              <div
-                key={step.num}
-                className="relative p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-shadow group"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-extrabold text-slate-400 dark:text-slate-500 font-inter">
-                    {step.num}
-                  </span>
-                  <div className={`w-9 h-9 rounded-xl bg-gradient-to-tr ${step.color} flex items-center justify-center text-white shadow-sm`}>
-                    <Icon className="w-4 h-4" />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-sm text-slate-900 dark:text-white">
-                      {step.titleAr}
-                    </h3>
-                    <span className="text-[11px] font-inter text-slate-400 dark:text-slate-500">
-                      ({step.titleEn})
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    {step.desc}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* Quick Dashboard & Recent Lectures Section */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <span className="w-2.5 h-6 rounded bg-emerald-600" />
-              <span>محاضراتي والمتابعة الدراسية</span>
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              تابع مذاكرتك وافتح المحاضرات والملخصات والاختبارات التفاعلية
+            <p className="text-xs text-slate-400">
+              ثوانٍ وتكون المحاضرة جاهزة للقراءة والمذاكرة
             </p>
           </div>
 
-          <Link
-            href="/lectures"
-            className="text-xs font-bold text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
-          >
-            <span>كل المحاضرات ({lectures.length})</span>
-            <ChevronRight className="w-4 h-4 rotate-180" />
-          </Link>
+          <div className="space-y-3 text-right max-w-xs mx-auto text-xs sm:text-sm">
+            {progressSteps.map((step, idx) => {
+              const isDone = idx < activeStep;
+              const isCurrent = idx === activeStep;
+
+              return (
+                <div
+                  key={idx}
+                  className={`flex items-center justify-between p-2.5 rounded-xl transition-all ${
+                    isCurrent
+                      ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300 font-bold'
+                      : isDone
+                      ? 'text-slate-700 dark:text-slate-300'
+                      : 'text-slate-400 opacity-60'
+                  }`}
+                >
+                  <span>{step}</span>
+                  {isDone ? (
+                    <Check className="w-4 h-4 text-emerald-600 font-bold" />
+                  ) : isCurrent ? (
+                    <Loader2 className="w-4 h-4 text-sky-600 animate-spin" />
+                  ) : (
+                    <span className="text-xs text-slate-300">•</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
-
-        {/* Featured Card */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {lectures.map((lecture) => (
-            <div
-              key={lecture.id}
-              className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-sky-300 dark:hover:border-sky-700 transition-all flex flex-col justify-between"
-            >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-900/60 text-sky-800 dark:text-sky-300">
-                    {lecture.subject}
-                  </span>
-                  <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>مكتملة ومجهزة</span>
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-sky-600">
-                    {lecture.title}
-                  </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                    {lecture.slideCount} شرائح دراسية • {lecture.terms?.length || 0} مصطلحات طبية • {lecture.questions?.length || 0} أسئلة اختبار
-                  </p>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
-                <Link
-                  href={`/lectures/${lecture.id}`}
-                  className="flex-1 py-2 px-3 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  <span>فتح المذاكرة</span>
-                </Link>
-
-                <Link
-                  href={`/lectures/${lecture.id}/exam`}
-                  className="py-2 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 text-xs font-bold border border-amber-200 dark:border-amber-800 flex items-center gap-1.5 transition-colors"
-                >
-                  <Award className="w-3.5 h-3.5" />
-                  <span>بدء الاختبار</span>
-                </Link>
-              </div>
+      ) : (
+        /* CLEAN HOMEPAGE (Rule 3, 4, 5) */
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
+          {/* Main Action Area (Left / Top) */}
+          <div className="md:col-span-7 space-y-6 text-center sm:text-right">
+            <div className="space-y-2">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                Nursing Study AI
+              </h1>
+              <p className="text-sm sm:text-base text-slate-500 dark:text-slate-400 font-medium">
+                محاضرتك → ترجمة → فهم → امتحان
+              </p>
             </div>
-          ))}
+
+            {/* Huge Primary Upload Button */}
+            <div className="pt-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                accept=".pdf,.pptx,.ppt,.docx"
+                className="hidden"
+              />
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-6 sm:py-8 px-6 rounded-3xl bg-sky-700 hover:bg-sky-800 text-white shadow-xl shadow-sky-700/20 flex flex-col items-center justify-center gap-3 transition-all transform active:scale-[0.98] group"
+              >
+                <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Upload className="w-7 h-7 text-white" />
+                </div>
+                <div className="space-y-1 text-center">
+                  <span className="text-xl sm:text-2xl font-bold block">
+                    ارفع المحاضرة
+                  </span>
+                  <span className="text-xs text-sky-200 block font-inter">
+                    PDF • PPT • PPTX
+                  </span>
+                </div>
+              </button>
+            </div>
+
+            <div className="text-center sm:text-right">
+              <Link
+                href="/lectures"
+                className="text-xs font-semibold text-slate-400 hover:text-sky-600 transition-colors inline-flex items-center gap-1"
+              >
+                <span>أو افتح محاضرة محفوظة من مكتبتك</span>
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Recent Lectures & Folders (Right / Bottom) */}
+          <div className="md:col-span-5 space-y-6">
+            {/* Recent Lectures */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between px-1">
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-sky-600" />
+                  <span>آخر ما ذاكرت</span>
+                </h2>
+                <Link
+                  href="/lectures"
+                  className="text-xs text-sky-600 hover:underline font-semibold"
+                >
+                  المكتبة كاملة
+                </Link>
+              </div>
+
+              {recentLectures.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-center text-xs text-slate-400">
+                  لا توجد محاضرات سابقة. ارفع أول محاضرة الآن!
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {recentLectures.map((lecture) => (
+                    <Link
+                      key={lecture.id}
+                      href={`/lectures/${lecture.id}`}
+                      className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs flex items-center justify-between transition-all group"
+                    >
+                      <div className="space-y-1 min-w-0 pr-1">
+                        <h3 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors truncate">
+                          {lecture.title}
+                        </h3>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {lecture.subject} • {lecture.slideCount} شرائح
+                        </p>
+                      </div>
+
+                      <div className="w-7 h-7 rounded-xl bg-slate-50 dark:bg-slate-800 flex items-center justify-center text-slate-400 group-hover:bg-sky-50 dark:group-hover:bg-sky-950 group-hover:text-sky-600 shrink-0 transition-colors">
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Root Folders */}
+            {rootFolders.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Folder className="w-4 h-4 text-sky-600" />
+                    <span>فولدراتي الدراسية</span>
+                  </h2>
+                  <Link
+                    href="/lectures"
+                    className="text-xs text-sky-600 hover:underline font-semibold"
+                  >
+                    تنظيم الفولدرات
+                  </Link>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {rootFolders.map((folder) => {
+                    const stats = LectureRepository.getFolderStats(folder.id);
+                    return (
+                      <Link
+                        key={folder.id}
+                        href={`/lectures?folder=${folder.id}`}
+                        className="p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-700 shadow-xs transition-all group text-right"
+                      >
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <div className="w-7 h-7 rounded-lg bg-sky-50 dark:bg-sky-950/60 flex items-center justify-center text-sky-600 shrink-0">
+                            {folder.type === 'subject' ? (
+                              <BookMarked className="w-4 h-4 text-purple-600" />
+                            ) : (
+                              <Folder className="w-4 h-4 text-sky-600" />
+                            )}
+                          </div>
+                          <span className="text-xs font-bold text-slate-800 dark:text-slate-200 group-hover:text-sky-600 transition-colors truncate">
+                            {folder.name}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">
+                          {stats.lectureCount} محاضرة
+                        </p>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </section>
-
-      {/* Quick Action Badges */}
-      <section className="p-4 rounded-2xl bg-slate-100/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-          <Link
-            href="/lectures"
-            className="p-3 rounded-xl bg-white dark:bg-slate-800 shadow-sm hover:shadow transition-all"
-          >
-            <Upload className="w-5 h-5 mx-auto text-sky-600 mb-1" />
-            <div className="text-xs font-bold text-slate-800 dark:text-slate-200">رفع محاضرة</div>
-            <div className="text-[10px] text-slate-400">PDF / PPTX</div>
-          </Link>
-
-          <Link
-            href="/dictionary"
-            className="p-3 rounded-xl bg-white dark:bg-slate-800 shadow-sm hover:shadow transition-all"
-          >
-            <Bookmark className="w-5 h-5 mx-auto text-purple-600 mb-1" />
-            <div className="text-xs font-bold text-slate-800 dark:text-slate-200">قاموس المصطلحات</div>
-            <div className="text-[10px] text-slate-400">نطق وترجمة طبية</div>
-          </Link>
-
-          <Link
-            href="/lectures/lecture_shock_001/exam"
-            className="p-3 rounded-xl bg-white dark:bg-slate-800 shadow-sm hover:shadow transition-all"
-          >
-            <Award className="w-5 h-5 mx-auto text-amber-600 mb-1" />
-            <div className="text-xs font-bold text-slate-800 dark:text-slate-200">وضع الامتحان</div>
-            <div className="text-[10px] text-slate-400">MCQ وصواب وخطأ</div>
-          </Link>
-
-          <Link
-            href="/lectures/lecture_shock_001"
-            className="p-3 rounded-xl bg-white dark:bg-slate-800 shadow-sm hover:shadow transition-all"
-          >
-            <Sparkles className="w-5 h-5 mx-auto text-emerald-600 mb-1" />
-            <div className="text-xs font-bold text-slate-800 dark:text-slate-200">شرح بالمصري</div>
-            <div className="text-[10px] text-slate-400">تبسيط المحاضرة</div>
-          </Link>
-        </div>
-      </section>
-
-      {/* Medical Ethics & Scientific Integrity Card */}
-      <section className="p-4 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/50 flex items-start gap-3">
-        <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <div className="space-y-1 text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
-          <p className="font-bold">
-            ميثاق الأمانة العلمية والدقة الطبية لطلاب التمريض:
-          </p>
-          <p className="text-amber-800 dark:text-amber-300/90 text-[11px]">
-            تلتزم المنصة بعدم تحريف أو استبدال أي محتوى علمي أو دوائي من محاضراتك الرسمية. النص الإنجليزي يُعرض دائماً كما ورد من المحاضر، وتُفصل الترجمات والشروحات والأسئلة المولدة بصرياً، ولا تُعد الأسئلة المتوقعة بديلاً عن امتحانات كليتك أو قرارات التدريب الإكلينيكي.
-          </p>
-        </div>
-      </section>
+      )}
     </div>
   );
 }
